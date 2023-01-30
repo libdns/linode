@@ -11,12 +11,6 @@ import (
 	"github.com/linode/linodego"
 )
 
-// TODO: Providers must not require additional provisioning steps by the callers; it
-// should work simply by populating a struct and calling methods on it. If your DNS
-// service requires long-lived state or some extra provisioning step, do it implicitly
-// when methods are called; sync.Once can help with this, and/or you can use a
-// sync.(RW)Mutex in your Provider struct to synchronize implicit provisioning.
-
 // Provider facilitates DNS record manipulation with Linode.
 type Provider struct {
 	APIToken string `json:"api_token,omitempty"`

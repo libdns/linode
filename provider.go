@@ -1,6 +1,5 @@
-// Package libdnstemplate implements a DNS record management client compatible
-// with the libdns interfaces for <PROVIDER NAME>. TODO: This package is a
-// template only. Customize all godocs for actual implementation.
+// Package linode implements a DNS record management client compatible
+// with the libdns interfaces for Linode.
 package linode
 
 import (

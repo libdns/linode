@@ -5,14 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
 	"github.com/linode/linodego"
 )
 
+var once sync.Once
+
 func (p *Provider) init(ctx context.Context) {
-	p.client = linodego.NewClient(http.DefaultClient)
+	once.Do(func() {
+		p.client = linodego.NewClient(http.DefaultClient)
+	})
 }
 
 func (p *Provider) convertRecordType(recordType string) linodego.DomainRecordType {

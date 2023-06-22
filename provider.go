@@ -33,15 +33,9 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
 
-	listOptions := linodego.NewListOptions(0, "")
-	linodeRecords, err := p.client.ListDomainRecords(ctx, domainID, listOptions)
+	records, err := p.getDomainRecords(ctx, zone, domainID)
 	if err != nil {
-		return nil, fmt.Errorf("could not list domain records: %v", err)
-	}
-
-	records := make([]libdns.Record, 0, len(linodeRecords))
-	for _, rec := range linodeRecords {
-		records = p.appendRecord(zone, records, &rec)
+		return nil, err
 	}
 
 	return records, nil
@@ -60,6 +54,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	}
 
 	returnRecords := make([]libdns.Record, 0, len(records))
+
 	for _, record := range records {
 		rec, err := p.createDomainRecord(ctx, zone, domainID, &record)
 		if err != nil {
@@ -84,7 +79,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
 
-	returnRecords := make([]libdns.Record, 0)
+	returnRecords := make([]libdns.Record, 0, len(records))
 
 	for _, record := range records {
 		if record.ID == "" {
@@ -120,7 +115,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
 
-	deletedRecords := make([]libdns.Record, len(records))
+	deletedRecords := make([]libdns.Record, 0, len(records))
 
 	for _, rec := range records {
 		err := p.deleteDomainRecord(ctx, domainID, &rec)

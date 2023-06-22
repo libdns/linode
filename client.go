@@ -50,8 +50,19 @@ func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, err
 	return 0, fmt.Errorf("could not find the domain provided")
 }
 
-func (p *Provider) appendRecord(zone string, records []libdns.Record, record *linodego.DomainRecord) []libdns.Record {
-	return append(records, *convertToLibdns(zone, record))
+func (p *Provider) getDomainRecords(ctx context.Context, zone string, domainID int) ([]libdns.Record, error) {
+	listOptions := linodego.NewListOptions(0, "")
+	linodeRecords, err := p.client.ListDomainRecords(ctx, domainID, listOptions)
+	if err != nil {
+		return nil, fmt.Errorf("could not list domain records: %v", err)
+	}
+
+	records := make([]libdns.Record, 0, len(linodeRecords))
+	for _, rec := range linodeRecords {
+		records = append(records, *convertToLibdns(zone, &rec))
+	}
+
+	return records, nil
 }
 
 func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {

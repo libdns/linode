@@ -61,7 +61,7 @@ func (p *Provider) getDomainIdByZone(ctx context.Context, zone string) (int, err
 			return 0, fmt.Errorf("could not list domains: %v", err)
 		}
 		for _, d := range domains {
-			if d.Domain == p.Domain {
+			if d.Domain == p.DomainID {
 				domainId = d.ID
 				done = true
 				break

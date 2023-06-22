@@ -16,7 +16,7 @@ type Provider struct {
 	APIToken   string `json:"api_token,omitempty"`
 	APIURL     string `json:"api_url,omitempty"`
 	APIVersion string `json:"api_version,omitempty"`
-	Domain     string `json:"domain_id,omitempty"`
+	DomainID     string `json:"domain_id,omitempty"`
 	client     linodego.Client
 	once       sync.Once
 }

@@ -50,7 +50,7 @@ func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, err
 	return 0, fmt.Errorf("could not find the domain provided")
 }
 
-func (p *Provider) getDomainRecords(ctx context.Context, zone string, domainID int) ([]libdns.Record, error) {
+func (p *Provider) listDomainRecords(ctx context.Context, zone string, domainID int) ([]libdns.Record, error) {
 	listOptions := linodego.NewListOptions(0, "")
 	linodeRecords, err := p.client.ListDomainRecords(ctx, domainID, listOptions)
 	if err != nil {
@@ -75,7 +75,7 @@ func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID
 	if err != nil {
 		return nil, err
 	}
-	return convertToLibdns(zone, newRec), nil
+	return mergeWithExistingLibdns(zone, record, newRec), nil
 }
 
 func (p *Provider) updateDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
@@ -103,18 +103,18 @@ func (p *Provider) deleteDomainRecord(ctx context.Context, domainID int, record 
 	return p.client.DeleteDomainRecord(ctx, domainID, recordID)
 }
 
-func convertToLibdns(zone string, remoteRecord *linodego.DomainRecord) *libdns.Record {
-	return mergeWithExistingLibdns(zone, nil, remoteRecord)
+func convertToLibdns(zone string, linodeRecord *linodego.DomainRecord) *libdns.Record {
+	return mergeWithExistingLibdns(zone, nil, linodeRecord)
 }
 
-func mergeWithExistingLibdns(zone string, existingRecord *libdns.Record, remoteRecord *linodego.DomainRecord) *libdns.Record {
+func mergeWithExistingLibdns(zone string, existingRecord *libdns.Record, linodeRecord *linodego.DomainRecord) *libdns.Record {
 	if existingRecord == nil {
 		existingRecord = &libdns.Record{}
 	}
-	existingRecord.ID = strconv.Itoa(remoteRecord.ID)
-	existingRecord.Type = string(remoteRecord.Type)
-	existingRecord.Name = libdns.RelativeName(remoteRecord.Name, zone)
-	existingRecord.Value = remoteRecord.Target
-	existingRecord.TTL = time.Duration(remoteRecord.TTLSec) * time.Second
+	existingRecord.ID = strconv.Itoa(linodeRecord.ID)
+	existingRecord.Type = string(linodeRecord.Type)
+	existingRecord.Name = libdns.RelativeName(linodeRecord.Name, zone)
+	existingRecord.Value = linodeRecord.Target
+	existingRecord.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
 	return existingRecord
 }

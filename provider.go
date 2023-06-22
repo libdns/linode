@@ -33,7 +33,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
 
-	records, err := p.getDomainRecords(ctx, zone, domainID)
+	records, err := p.listDomainRecords(ctx, zone, domainID)
 	if err != nil {
 		return nil, err
 	}

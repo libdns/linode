@@ -5,6 +5,7 @@ package linode
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/libdns/libdns"
 	"github.com/linode/linodego"
@@ -17,6 +18,7 @@ type Provider struct {
 	APIVersion string `json:"api_version,omitempty"`
 	Domain     string `json:"domain_id,omitempty"`
 	client     linodego.Client
+	once       sync.Once
 }
 
 // GetRecords lists all the records in the zone.

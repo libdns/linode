@@ -5,17 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
 	"github.com/linode/linodego"
 )
 
-var once sync.Once
-
 func (p *Provider) init(ctx context.Context) {
-	once.Do(func() {
+	p.once.Do(func() {
 		p.client = linodego.NewClient(http.DefaultClient)
 		if p.APIToken != "" {
 			p.client.SetToken(p.APIToken)

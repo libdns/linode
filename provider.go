@@ -13,8 +13,11 @@ import (
 
 // Provider facilitates DNS record manipulation with Linode.
 type Provider struct {
-	APIToken   string `json:"api_token,omitempty"`
-	APIURL     string `json:"api_url,omitempty"`
+	// APIToken is the Linode Personal Access Token, see https://cloud.linode.com/profile/tokens.
+	APIToken string `json:"api_token,omitempty"`
+	// APIURL is the Linode API hostname, i.e. "api.linode.com".
+	APIURL string `json:"api_url,omitempty"`
+	// APIVersion is the Linode API version, i.e. "v4".
 	APIVersion string `json:"api_version,omitempty"`
 	client     linodego.Client
 	once       sync.Once

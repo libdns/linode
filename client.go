@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/libdns/libdns"
@@ -27,27 +26,22 @@ func (p *Provider) init(ctx context.Context) {
 	})
 }
 
-// trimTrailingDot trims any trailing "." from fqdn. Linode's API does not use FQDNs.
-func trimTrailingDot(fqdn string) string {
-	return strings.TrimSuffix(fqdn, ".")
-}
-
 func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, error) {
-	listOptions := linodego.NewListOptions(1, "")
-	listOptions.Pages = listOptions.Page
-	for page := listOptions.Pages; page <= listOptions.Pages; page++ {
-		listOptions.Page = page
-		domains, err := p.client.ListDomains(ctx, listOptions)
-		if err != nil {
-			return 0, fmt.Errorf("could not list domains: %v", err)
-		}
-		for _, d := range domains {
-			if d.Domain == trimTrailingDot(zone) {
-				return d.ID, nil
-			}
-		}
+	f := linodego.Filter{}
+	f.AddField(linodego.Eq, "domain", libdns.AbsoluteName(zone, ""))
+	filter, err := f.MarshalJSON()
+	if err != nil {
+		return 0, err
 	}
-	return 0, fmt.Errorf("could not find the domain provided")
+	listOptions := linodego.NewListOptions(0, string(filter))
+	domains, err := p.client.ListDomains(ctx, listOptions)
+	if err != nil {
+		return 0, fmt.Errorf("could not list domains: %v", err)
+	}
+	if len(domains) == 0 {
+		return 0, fmt.Errorf("could not find the domain provided")
+	}
+	return domains[0].ID, nil
 }
 
 func (p *Provider) listDomainRecords(ctx context.Context, zone string, domainID int) ([]libdns.Record, error) {
@@ -56,17 +50,30 @@ func (p *Provider) listDomainRecords(ctx context.Context, zone string, domainID 
 	if err != nil {
 		return nil, fmt.Errorf("could not list domain records: %v", err)
 	}
-
 	records := make([]libdns.Record, 0, len(linodeRecords))
-	for _, rec := range linodeRecords {
-		records = append(records, *convertToLibdns(zone, &rec))
+	for _, linodeRecord := range linodeRecords {
+		records = append(records, *convertToLibdns(zone, &linodeRecord))
 	}
-
 	return records, nil
 }
 
+func (p *Provider) createOrUpdateDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
+	if record.ID == "" {
+		addedRecord, err := p.createDomainRecord(ctx, zone, domainID, record)
+		if err != nil {
+			return nil, err
+		}
+		return addedRecord, nil
+	}
+	updatedRecord, err := p.updateDomainRecord(ctx, zone, domainID, record)
+	if err != nil {
+		return nil, err
+	}
+	return updatedRecord, nil
+}
+
 func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
-	newRec, err := p.client.CreateDomainRecord(ctx, domainID, linodego.DomainRecordCreateOptions{
+	addedLinodeRecord, err := p.client.CreateDomainRecord(ctx, domainID, linodego.DomainRecordCreateOptions{
 		Type:   linodego.DomainRecordType(record.Type),
 		Name:   libdns.RelativeName(record.Name, zone),
 		Target: record.Value,
@@ -75,7 +82,7 @@ func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID
 	if err != nil {
 		return nil, err
 	}
-	return mergeWithExistingLibdns(zone, record, newRec), nil
+	return mergeWithExistingLibdns(zone, record, addedLinodeRecord), nil
 }
 
 func (p *Provider) updateDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
@@ -83,7 +90,7 @@ func (p *Provider) updateDomainRecord(ctx context.Context, zone string, domainID
 	if err != nil {
 		return nil, err
 	}
-	updatedRec, err := p.client.UpdateDomainRecord(ctx, domainID, recordID, linodego.DomainRecordUpdateOptions{
+	updatedLinodeRecord, err := p.client.UpdateDomainRecord(ctx, domainID, recordID, linodego.DomainRecordUpdateOptions{
 		Type:   linodego.DomainRecordType(record.Type),
 		Name:   libdns.RelativeName(record.Name, zone),
 		Target: record.Value,
@@ -92,7 +99,7 @@ func (p *Provider) updateDomainRecord(ctx context.Context, zone string, domainID
 	if err != nil {
 		return nil, err
 	}
-	return mergeWithExistingLibdns(zone, record, updatedRec), nil
+	return mergeWithExistingLibdns(zone, record, updatedLinodeRecord), nil
 }
 
 func (p *Provider) deleteDomainRecord(ctx context.Context, domainID int, record *libdns.Record) error {

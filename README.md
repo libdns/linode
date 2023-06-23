@@ -5,4 +5,4 @@ Linode for [`libdns`](https://github.com/libdns/libdns)
 
 This package implements the [libdns interfaces](https://github.com/libdns/libdns) for Linode, allowing you to manage DNS records.
 
-Requires a Linode API token.
+Requires a Linode v4 API token.

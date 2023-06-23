@@ -5,6 +5,7 @@ package linode
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/libdns/libdns"
 	"github.com/linode/linodego"
@@ -12,113 +13,88 @@ import (
 
 // Provider facilitates DNS record manipulation with Linode.
 type Provider struct {
-	APIToken string `json:"api_token,omitempty"`
-	Domain   string `json:"domain_id,omitempty"`
-	client   linodego.Client
+	APIToken   string `json:"api_token,omitempty"`
+	APIURL     string `json:"api_url,omitempty"`
+	APIVersion string `json:"api_version,omitempty"`
+	client     linodego.Client
+	once       sync.Once
+	mutex      sync.Mutex
 }
 
 // GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	p.init(ctx)
-
-	domainId, err := p.getDomainIdByZone(ctx, zone)
+	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
-
-	listOptions := linodego.NewListOptions(0, "")
-	linodeRecords, err := p.client.ListDomainRecords(ctx, domainId, listOptions)
+	records, err := p.listDomainRecords(ctx, zone, domainID)
 	if err != nil {
-		return nil, fmt.Errorf("could not list domain records: %v", err)
-	}
-
-	records := make([]libdns.Record, 0, len(linodeRecords))
-	for _, rec := range linodeRecords {
-		records = p.appendRecord(records, &rec)
+		return nil, err
 	}
 	return records, nil
 }
 
 // AppendRecords adds records to the zone. It returns the records that were added.
 func (p *Provider) AppendRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	p.init(ctx)
-
-	domainId, err := p.getDomainIdByZone(ctx, zone)
+	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
-
-	returnRecords := make([]libdns.Record, 0, len(records))
+	addedRecords := make([]libdns.Record, 0, len(records))
 	for _, record := range records {
-		rec, err := p.createDomainRecord(ctx, domainId, &record)
+		addedRecord, err := p.createDomainRecord(ctx, zone, domainID, &record)
 		if err != nil {
-			return returnRecords, err
+			return nil, err
 		}
-		returnRecords = append(returnRecords, *rec)
+		addedRecords = append(addedRecords, *addedRecord)
 	}
-
-	return returnRecords, nil
+	return addedRecords, nil
 }
 
 // SetRecords sets the records in the zone, either by updating existing records or creating new ones.
 // It returns the updated records.
 func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	p.init(ctx)
-
-	domainID, err := p.getDomainIdByZone(ctx, zone)
+	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
-
-	remoteRecords, err := p.getRemoteRecords(ctx, domainID)
-	if err != nil {
-		return nil, err
-	}
-
-	returnRecords := make([]libdns.Record, 0)
-
+	updatedRecords := make([]libdns.Record, 0, len(records))
 	for _, record := range records {
-		remoteRecord, ok := remoteRecords[record.Name]
-		if !ok {
-			// Doesn't exist yet
-			newRec, err := p.createDomainRecord(ctx, domainID, &record)
-			if err != nil {
-				return returnRecords, err
-			}
-			returnRecords = append(returnRecords, *newRec)
-			continue
-		}
-
-		// Update the record
-		newRec, err := p.updateDomainRecord(ctx, domainID, &record, remoteRecord)
+		updatedRecord, err := p.createOrUpdateDomainRecord(ctx, zone, domainID, &record)
 		if err != nil {
-			return returnRecords, err
+			return nil, err
 		}
-		returnRecords = append(returnRecords, *newRec)
+		updatedRecords = append(updatedRecords, *updatedRecord)
 	}
-	return returnRecords, nil
+	return updatedRecords, nil
 }
 
 // DeleteRecords deletes the records from the zone. It returns the records that were deleted.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 	p.init(ctx)
-
-	domainID, err := p.getDomainIdByZone(ctx, zone)
+	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
 	}
-
-	deletedRecords := make([]libdns.Record, len(records))
-
-	for _, rec := range records {
-		err := p.deleteDomainRecord(ctx, domainID, &rec)
+	deletedRecords := make([]libdns.Record, 0, len(records))
+	for _, record := range records {
+		err := p.deleteDomainRecord(ctx, domainID, &record)
 		if err != nil {
-			return deletedRecords, err
+			return nil, err
 		}
-
-		deletedRecords = append(deletedRecords, rec)
+		deletedRecords = append(deletedRecords, record)
 	}
-
 	return deletedRecords, nil
 }
 

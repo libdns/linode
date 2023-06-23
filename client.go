@@ -5,105 +5,101 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
 	"github.com/linode/linodego"
 )
 
-var once sync.Once
-
 func (p *Provider) init(ctx context.Context) {
-	once.Do(func() {
+	p.once.Do(func() {
 		p.client = linodego.NewClient(http.DefaultClient)
+		if p.APIToken != "" {
+			p.client.SetToken(p.APIToken)
+		}
+		if p.APIURL != "" {
+			p.client.SetBaseURL(p.APIURL)
+		}
+		if p.APIVersion != "" {
+			p.client.SetAPIVersion(p.APIVersion)
+		}
 	})
 }
 
-func (p *Provider) convertRecordType(recordType string) linodego.DomainRecordType {
-	switch recordType {
-	case "A":
-		return linodego.RecordTypeA
-	case "AAAA":
-		return linodego.RecordTypeAAAA
-	case "CNAME":
-		return linodego.RecordTypeCNAME
-	case "MX":
-		return linodego.RecordTypeMX
-	case "CAA":
-		return linodego.RecordTypeCAA
-	case "NS":
-		return linodego.RecordTypeNS
-	case "TXT":
-		return linodego.RecordTypeTXT
-	case "PTR":
-		return linodego.RecordTypePTR
-	case "SRV":
-		return linodego.RecordTypeSRV
+func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, error) {
+	f := linodego.Filter{}
+	f.AddField(linodego.Eq, "domain", libdns.AbsoluteName(zone, ""))
+	filter, err := f.MarshalJSON()
+	if err != nil {
+		return 0, err
 	}
-	return linodego.RecordTypeA
+	listOptions := linodego.NewListOptions(0, string(filter))
+	domains, err := p.client.ListDomains(ctx, listOptions)
+	if err != nil {
+		return 0, fmt.Errorf("could not list domains: %v", err)
+	}
+	if len(domains) == 0 {
+		return 0, fmt.Errorf("could not find the domain provided")
+	}
+	return domains[0].ID, nil
 }
 
-func (p *Provider) getDomainIdByZone(ctx context.Context, zone string) (int, error) {
-	var done bool
-	var page int
-	listOptions := linodego.NewListOptions(page, "")
-	var domainId int
-	for {
-		domains, err := p.client.ListDomains(ctx, listOptions)
+func (p *Provider) listDomainRecords(ctx context.Context, zone string, domainID int) ([]libdns.Record, error) {
+	listOptions := linodego.NewListOptions(0, "")
+	linodeRecords, err := p.client.ListDomainRecords(ctx, domainID, listOptions)
+	if err != nil {
+		return nil, fmt.Errorf("could not list domain records: %v", err)
+	}
+	records := make([]libdns.Record, 0, len(linodeRecords))
+	for _, linodeRecord := range linodeRecords {
+		records = append(records, *convertToLibdns(zone, &linodeRecord))
+	}
+	return records, nil
+}
+
+func (p *Provider) createOrUpdateDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
+	if record.ID == "" {
+		addedRecord, err := p.createDomainRecord(ctx, zone, domainID, record)
 		if err != nil {
-			return 0, fmt.Errorf("could not list domains: %v", err)
+			return nil, err
 		}
-		for _, d := range domains {
-			if d.Domain == p.Domain {
-				domainId = d.ID
-				done = true
-				break
-			}
-		}
-		if done {
-			break
-		}
-		if !done && listOptions.Pages > page {
-			page++
-			listOptions.Page = page
-		}
-		if !done && listOptions.PageOptions.Page == page {
-			return 0, fmt.Errorf("could not find the domain provided")
-		}
+		return addedRecord, nil
 	}
-
-	return domainId, nil
+	updatedRecord, err := p.updateDomainRecord(ctx, zone, domainID, record)
+	if err != nil {
+		return nil, err
+	}
+	return updatedRecord, nil
 }
 
-func (p *Provider) appendRecord(records []libdns.Record, record *linodego.DomainRecord) []libdns.Record {
-	return append(records, *p.convertToLibdns(record))
-}
-
-func (p *Provider) createDomainRecord(ctx context.Context, domainID int, record *libdns.Record) (*libdns.Record, error) {
-	newRec, err := p.client.CreateDomainRecord(ctx, domainID, linodego.DomainRecordCreateOptions{
-		Type:   p.convertRecordType(record.Type),
-		Name:   record.Name,
+func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
+	addedLinodeRecord, err := p.client.CreateDomainRecord(ctx, domainID, linodego.DomainRecordCreateOptions{
+		Type:   linodego.DomainRecordType(record.Type),
+		Name:   libdns.RelativeName(record.Name, zone),
 		Target: record.Value,
 		TTLSec: int(record.TTL.Seconds()),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return p.convertToLibdns(newRec), nil
+	return mergeWithExistingLibdns(zone, record, addedLinodeRecord), nil
 }
 
-func (p *Provider) updateDomainRecord(ctx context.Context, domainID int, record *libdns.Record, remoteRecord *linodego.DomainRecord) (*libdns.Record, error) {
-	updatedRec, err := p.client.UpdateDomainRecord(ctx, domainID, remoteRecord.ID, linodego.DomainRecordUpdateOptions{
-		Type:   p.convertRecordType(record.Type),
-		Name:   record.Name,
+func (p *Provider) updateDomainRecord(ctx context.Context, zone string, domainID int, record *libdns.Record) (*libdns.Record, error) {
+	recordID, err := strconv.Atoi(record.ID)
+	if err != nil {
+		return nil, err
+	}
+	updatedLinodeRecord, err := p.client.UpdateDomainRecord(ctx, domainID, recordID, linodego.DomainRecordUpdateOptions{
+		Type:   linodego.DomainRecordType(record.Type),
+		Name:   libdns.RelativeName(record.Name, zone),
 		Target: record.Value,
 		TTLSec: int(record.TTL.Seconds()),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return p.convertToLibdns(updatedRec), nil
+	return mergeWithExistingLibdns(zone, record, updatedLinodeRecord), nil
 }
 
 func (p *Provider) deleteDomainRecord(ctx context.Context, domainID int, record *libdns.Record) error {
@@ -114,28 +110,18 @@ func (p *Provider) deleteDomainRecord(ctx context.Context, domainID int, record 
 	return p.client.DeleteDomainRecord(ctx, domainID, recordID)
 }
 
-func (p *Provider) convertToLibdns(record *linodego.DomainRecord) *libdns.Record {
-	return &libdns.Record{
-		ID:    strconv.Itoa(record.ID),
-		Type:  string(record.Type),
-		Name:  record.Name,
-		Value: record.Target,
-		TTL:   time.Duration(record.TTLSec),
-	}
+func convertToLibdns(zone string, linodeRecord *linodego.DomainRecord) *libdns.Record {
+	return mergeWithExistingLibdns(zone, nil, linodeRecord)
 }
 
-func (p *Provider) getRemoteRecords(ctx context.Context, domainID int) (map[string]*linodego.DomainRecord, error) {
-	// We don't care about paging. Just get all of them.
-	remoteRecordList, err := p.client.ListDomainRecords(ctx, domainID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not list domain records: %v", err)
+func mergeWithExistingLibdns(zone string, existingRecord *libdns.Record, linodeRecord *linodego.DomainRecord) *libdns.Record {
+	if existingRecord == nil {
+		existingRecord = &libdns.Record{}
 	}
-
-	remoteRecords := make(map[string]*linodego.DomainRecord, len(remoteRecordList))
-
-	for _, record := range remoteRecordList {
-		remoteRecords[record.Name] = &record
-	}
-
-	return remoteRecords, nil
+	existingRecord.ID = strconv.Itoa(linodeRecord.ID)
+	existingRecord.Type = string(linodeRecord.Type)
+	existingRecord.Name = libdns.RelativeName(linodeRecord.Name, zone)
+	existingRecord.Value = linodeRecord.Target
+	existingRecord.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
+	return existingRecord
 }

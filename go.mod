@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/libdns/libdns v0.2.1
-	github.com/linode/linodego v1.17.2
+	github.com/linode/linodego v1.18.0
 )
 
 require (

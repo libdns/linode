@@ -4,10 +4,11 @@ go 1.20
 
 require (
 	github.com/libdns/libdns v0.2.1
-	github.com/linode/linodego v1.22.0
+	github.com/linode/linodego v1.23.0
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-resty/resty/v2 v2.7.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/net v0.15.0 // indirect

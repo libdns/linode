@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/libdns/libdns"
@@ -15,7 +16,8 @@ var ErrUnsupportedType = errors.New("Unsupported DNS record type")
 
 func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, error) {
 	f := linodego.Filter{}
-	f.AddField(linodego.Eq, "domain", libdns.AbsoluteName("@", zone))
+	// Trim the trailing dot from the zone name because Linode seems to require it
+	f.AddField(linodego.Eq, "domain", strings.TrimSuffix(libdns.AbsoluteName("@", zone), "."))
 	filter, err := f.MarshalJSON()
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal filter: %w", err)

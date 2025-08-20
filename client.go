@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 var ErrUnsupportedType = errors.New("Unsupported DNS record type")
 
 func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, error) {
+	slog.Debug("Enter getDomainIDByZone", "zone", zone)
 	f := linodego.Filter{}
 	// Trim the trailing dot from the zone name because Linode seems to require it
 	f.AddField(linodego.Eq, "domain", strings.TrimSuffix(libdns.AbsoluteName("@", zone), "."))
@@ -33,10 +35,12 @@ func (p *Provider) getDomainIDByZone(ctx context.Context, zone string) (int, err
 	if len(domains) > 1 {
 		return 0, fmt.Errorf("could not find the domain: >1 returned: [%v]", domains)
 	}
+	slog.Debug("Exit getDomainIDByZone", "zone", zone, "domainID", domains[0].ID)
 	return domains[0].ID, nil
 }
 
 func (p *Provider) listDomainRecords(ctx context.Context, domainID int) ([]libdns.Record, error) {
+	slog.Debug("Enter listDomainRecords", "domainID", domainID)
 	linodeRecords, err := p.client.ListDomainRecords(ctx, domainID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not list domain records: %w", err)
@@ -49,10 +53,12 @@ func (p *Provider) listDomainRecords(ctx context.Context, domainID int) ([]libdn
 		}
 		records = append(records, record)
 	}
+	slog.Debug("Exit listDomainRecords", "domainID", domainID, "lenRecords", len(records))
 	return records, nil
 }
 
 func (p *Provider) createOrUpdateDomainRecords(ctx context.Context, zone string, domainID int, records []libdns.Record) ([]libdns.Record, error) {
+	slog.Debug("Enter createOrUpdateDomainRecords", "zone", zone, "domainID", domainID, "lenRecords", len(records))
 	// According to the libdns interface, any (Name, Type) pairs in the input records should be the only records that
 	// remain in the output for those (Name, Type) pairs.
 	// Ex: (lifted from the libdns interface and annotated)
@@ -134,10 +140,13 @@ func (p *Provider) createOrUpdateDomainRecords(ctx context.Context, zone string,
 		setRecords = append(setRecords, created)
 	}
 
+	slog.Debug("Exit createOrUpdateDomainRecords", "zone", zone, "domainID", domainID, "lenSetRecords", len(setRecords))
 	return setRecords, nil
 }
 
 func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID int, record libdns.Record) (libdns.Record, error) {
+	rr := record.RR()
+	slog.Debug("Enter createDomainRecord", "zone", zone, "domainID", domainID, "name", rr.Name, "type", rr.Type)
 	createOpts, err := convertToDomainRecord(record, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not convert record to linodego struct: %w", err)
@@ -146,7 +155,9 @@ func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID
 	if err != nil {
 		return nil, fmt.Errorf("could not create domain record: %w", err)
 	}
-	return convertToLibdns(addedLinodeRecord)
+	librec, err := convertToLibdns(addedLinodeRecord)
+	slog.Debug("Exit createDomainRecord", "zone", zone, "domainID", domainID, "name", addedLinodeRecord.Name, "type", addedLinodeRecord.Type, "err", err)
+	return librec, err
 }
 
 // deleteDomainRecords deletes each record from the zone. It returns the records that were deleted.
@@ -156,6 +167,7 @@ func (p *Provider) createDomainRecord(ctx context.Context, zone string, domainID
 // Note: this does not apply to the Name field.
 // Since there are wildcards for Type, TTL, and Value, it can delete multiple records for each input record.
 func (p *Provider) deleteDomainRecords(ctx context.Context, domainID int, records []libdns.Record) ([]libdns.Record, error) {
+	slog.Debug("Enter deleteDomainRecords", "domainID", domainID, "lenRecords", len(records))
 	// Future improvement?: It should be possible to use the linodego.ListOptions to filter by Name, Type, TTL, and Value.
 	// Though this would change the number of API calls from one (list all) to N, where N is the number of records to delete.
 	// For now, we just list all records and delete them one by one.
@@ -211,10 +223,12 @@ func (p *Provider) deleteDomainRecords(ctx context.Context, domainID int, record
 		}
 	}
 
+	slog.Debug("Exit deleteDomainRecords", "domainID", domainID, "lenDeleted", len(deleted))
 	return deleted, nil
 }
 
 func convertToLibdns(linodeRecord *linodego.DomainRecord) (libdns.Record, error) {
+	slog.Debug("Enter convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name)
 	switch linodeRecord.Type {
 	case linodego.RecordTypeA:
 		fallthrough
@@ -227,12 +241,14 @@ func convertToLibdns(linodeRecord *linodego.DomainRecord) (libdns.Record, error)
 			return nil, fmt.Errorf("could not parse target as IP: %w", err)
 		}
 		record.IP = ip
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "Address")
 		return record, nil
 	case linodego.RecordTypeNS:
 		record := libdns.NS{}
 		record.Name = libdnsWantsAtSym(linodeRecord.Name)
 		record.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
 		record.Target = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "NS")
 		return record, nil
 	case linodego.RecordTypeMX:
 		record := libdns.MX{}
@@ -240,18 +256,21 @@ func convertToLibdns(linodeRecord *linodego.DomainRecord) (libdns.Record, error)
 		record.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
 		record.Preference = uint16(linodeRecord.Priority)
 		record.Target = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "MX")
 		return record, nil
 	case linodego.RecordTypeCNAME:
 		record := libdns.CNAME{}
 		record.Name = libdnsWantsAtSym(linodeRecord.Name)
 		record.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
 		record.Target = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "CNAME")
 		return record, nil
 	case linodego.RecordTypeTXT:
 		record := libdns.TXT{}
 		record.Name = libdnsWantsAtSym(linodeRecord.Name)
 		record.TTL = time.Duration(linodeRecord.TTLSec) * time.Second
 		record.Text = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "TXT")
 		return record, nil
 	case linodego.RecordTypeSRV:
 		record := libdns.SRV{}
@@ -271,9 +290,11 @@ func convertToLibdns(linodeRecord *linodego.DomainRecord) (libdns.Record, error)
 		record.Weight = uint16(linodeRecord.Weight)
 		record.Port = uint16(linodeRecord.Port)
 		record.Target = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "SRV")
 		return record, nil
 	case linodego.RecordTypePTR:
 		// Can't be represented in libdns
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "PTR")
 		return nil, fmt.Errorf("libdns does not support PTR records")
 	case linodego.RecordTypeCAA:
 		record := libdns.CAA{}
@@ -287,14 +308,17 @@ func convertToLibdns(linodeRecord *linodego.DomainRecord) (libdns.Record, error)
 		}
 		record.Tag = *linodeRecord.Tag
 		record.Value = linodeRecord.Target
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "CAA")
 		return record, nil
 	default:
+		slog.Debug("Exit convertToLibdns", "type", linodeRecord.Type, "name", linodeRecord.Name, "as", "Unknown")
 		return nil, fmt.Errorf("unknown record type: %v", linodeRecord.Type)
 	}
 }
 
 func convertToDomainRecord(record libdns.Record, zone string) (linodego.DomainRecordCreateOptions, error) {
 	rr := record.RR()
+	slog.Debug("Enter convertToDomainRecord", "zone", zone, "name", rr.Name, "type", rr.Type)
 	domainRecord := linodego.DomainRecordCreateOptions{
 		Type:   linodego.DomainRecordType(rr.Type),
 		Name:   linodeDoesntWantAtSym(libdns.RelativeName(rr.Name, zone)),
@@ -338,6 +362,7 @@ func convertToDomainRecord(record libdns.Record, zone string) (linodego.DomainRe
 	case libdns.TXT:
 		// All necessary fields are set
 	}
+	slog.Debug("Exit convertToDomainRecord", "zone", zone, "name", rr.Name, "type", rr.Type, "options", domainRecord)
 	return domainRecord, nil
 }
 

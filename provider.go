@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/libdns/libdns"
@@ -21,13 +23,24 @@ type Provider struct {
 	APIURL string `json:"api_url,omitempty"`
 	// APIVersion is the Linode API version, i.e. "v4".
 	APIVersion string `json:"api_version,omitempty"`
-	client     linodego.Client
-	once       sync.Once
-	mutex      sync.Mutex
+
+	DebugLogsEnabled bool `json:"debug_logs_enabled,omitempty"`
+	client           linodego.Client
+	once             sync.Once
+	mutex            sync.Mutex
 }
 
 func (p *Provider) init(_ context.Context) {
+	slog.Debug("Enter init", "hasToken", p.APIToken != "", "APIURL", p.APIURL, "APIVersion", p.APIVersion)
 	p.once.Do(func() {
+		// Configure global logger based on DebugLogsEnabled
+		level := slog.LevelInfo
+		if p.DebugLogsEnabled {
+			level = slog.LevelDebug
+		}
+		h := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+		slog.SetDefault(slog.New(h))
+
 		p.client = linodego.NewClient(http.DefaultClient)
 		if p.APIToken != "" {
 			p.client.SetToken(p.APIToken)
@@ -39,6 +52,7 @@ func (p *Provider) init(_ context.Context) {
 			p.client.SetAPIVersion(p.APIVersion)
 		}
 	})
+	slog.Debug("Exit init")
 }
 
 // ListZones lists all the zones (domains).
@@ -46,6 +60,7 @@ func (p *Provider) ListZones(ctx context.Context) ([]libdns.Zone, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.init(ctx)
+	slog.Debug("Enter ListZones")
 	domains, err := p.client.ListDomains(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error listing domains: %w", err)
@@ -54,6 +69,7 @@ func (p *Provider) ListZones(ctx context.Context) ([]libdns.Zone, error) {
 	for _, domain := range domains {
 		zones = append(zones, libdns.Zone{Name: domain.Domain})
 	}
+	slog.Debug("Exit ListZones", "lenZones", len(zones))
 	return zones, nil
 }
 
@@ -62,6 +78,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.init(ctx)
+	slog.Debug("Enter GetRecords", "zone", zone)
 	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("error getting domain ID for zone %s: %v", zone, err)
@@ -70,6 +87,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	if err != nil {
 		return nil, fmt.Errorf("error listing domain records: %w", err)
 	}
+	slog.Debug("Exit GetRecords", "zone", zone, "lenRecords", len(records))
 	return records, nil
 }
 
@@ -78,6 +96,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.init(ctx)
+	slog.Debug("Enter AppendRecords", "zone", zone, "lenRecords", len(records))
 	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("error getting domain ID for zone %s: %v", zone, err)
@@ -87,15 +106,16 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 		addedRecord, err := p.createDomainRecord(ctx, zone, domainID, record)
 		if err != nil {
 			if errors.Is(err, ErrUnsupportedType) {
-				// I would rather not fail silently, and no logger is provided by this interface, so just print the error.
-				fmt.Printf("skipping unsupported record type: %v\n", err)
+				// I would rather not fail silently; log at debug level as specified.
+				slog.Debug("skipping unsupported record type", "error", err)
 				continue
 			}
-			fmt.Printf("skipping record due to error: %v\n", err)
+			slog.Debug("skipping record due to error", "error", err)
 			continue
 		}
 		addedRecords = append(addedRecords, addedRecord)
 	}
+	slog.Debug("Exit AppendRecords", "zone", zone, "lenAddedRecords", len(addedRecords))
 	return addedRecords, nil
 }
 
@@ -105,6 +125,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.init(ctx)
+	slog.Debug("Enter SetRecords", "zone", zone, "lenRecords", len(records))
 	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("could not find domain ID for zone: %s: %v", zone, err)
@@ -113,6 +134,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	if err != nil {
 		return nil, fmt.Errorf("could not create or update domain records: %w", err)
 	}
+	slog.Debug("Exit SetRecords", "zone", zone, "lenSetRecords", len(setRecords))
 	return setRecords, nil
 }
 
@@ -125,6 +147,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 	p.init(ctx)
+	slog.Debug("Enter DeleteRecords", "zone", zone, "lenRecords", len(records))
 	domainID, err := p.getDomainIDByZone(ctx, zone)
 	if err != nil {
 		return nil, fmt.Errorf("error getting domain ID for zone %s: %v", zone, err)
@@ -133,6 +156,7 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	if err != nil {
 		return nil, fmt.Errorf("error deleting domain records: %w", err)
 	}
+	slog.Debug("Exit DeleteRecords", "zone", zone, "lenDeletedRecords", len(deletedRecords))
 	return deletedRecords, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,9 +38,10 @@ func setupProviderFromEnv(t *testing.T) *Provider {
 	}
 
 	return &Provider{
-		APIToken:   pat,
-		APIURL:     apiURL,
-		APIVersion: apiVersion,
+		APIToken:         pat,
+		APIURL:           apiURL,
+		APIVersion:       apiVersion,
+		DebugLogsEnabled: false,
 	}
 }
 
@@ -91,6 +93,7 @@ func createDomainRecordsOrDie(t *testing.T, c linodego.Client, zone string, doma
 }
 
 func makeTestDomainRecords(domain string) []libdns.Record {
+	domain = strings.TrimSuffix(domain, ".")
 	testDomains := []libdns.Record{
 		// Add a diverse set of sample records within this zone.
 		// A records
@@ -205,166 +208,183 @@ func TestIntegration_GetRecords(t *testing.T) {
 	p := setupProviderFromEnv(t)
 	c := newLinodeClientFromEnv(t)
 
-	// Create a fresh domain and some records for this test case.
+	testForZone := func(t *testing.T, zone string) {
+		t.Helper()
+		records, err := p.GetRecords(context.Background(), zone)
+		if err != nil {
+			t.Fatalf("GetRecords returned error for zone %q: %v", zone, err)
+		}
+
+		// Assert that our sample records are present.
+		expectedRecords := makeTestDomainRecords(zone)
+		seenRecords := make([]bool, len(records))
+		for _, expected := range expectedRecords {
+			t.Run(expected.RR().Data, func(t *testing.T) {
+				exp := expected.RR()
+				found := false
+				for recI, actual := range records {
+					act := actual.RR()
+					if exp.Name == act.Name && exp.Type == act.Type && exp.TTL == act.TTL && exp.Data == act.Data {
+						if seenRecords[recI] {
+							t.Errorf("matched record with two expected records: record (%+v) in GetRecords results for zone %q", expected, zone)
+						}
+						found = true
+						seenRecords[recI] = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected to find record %+v in GetRecords results for zone %q", expected, zone)
+				}
+			})
+		}
+		// Assert that all no extra records were returned.
+		for recI, seen := range seenRecords {
+			if !seen {
+				t.Errorf("record in GetRecords results not in expectedResults for zone %q: (%+v)", zone, records[recI])
+			}
+		}
+		t.Logf("GetRecords succeeded for zone %q; found expected sample records", zone)
+	}
+
+	// Domain without dot suffix
 	zone, domainID := makeTestDomain(t, c)
 	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone) })
 
-	records, err := p.GetRecords(context.Background(), zone)
-	if err != nil {
-		t.Fatalf("GetRecords returned error for zone %q: %v", zone, err)
-	}
-
-	// Assert that our sample records are present.
-	expectedRecords := makeTestDomainRecords(zone)
-	seenRecords := make([]bool, len(records))
-	for _, expected := range expectedRecords {
-		t.Run(expected.RR().Data, func(t *testing.T) {
-			exp := expected.RR()
-			found := false
-			for recI, actual := range records {
-				act := actual.RR()
-				if exp.Name == act.Name && exp.Type == act.Type && exp.TTL == act.TTL && exp.Data == act.Data {
-					if seenRecords[recI] {
-						t.Errorf("matched record with two expected records: record (%+v) in GetRecords results for zone %q", expected, zone)
-					}
-					found = true
-					seenRecords[recI] = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("expected to find record %+v in GetRecords results for zone %q", expected, zone)
-			}
-		})
-	}
-	// Assert that all no extra records were returned.
-	for recI, seen := range seenRecords {
-		if !seen {
-			t.Errorf("record in GetRecords results not in expectedResults for zone %q: (%+v)", zone, records[recI])
-		}
-	}
-	t.Logf("GetRecords succeeded for zone %q; found expected sample records", zone)
+	// Domain with dot suffix
+	zone, domainID = makeTestDomain(t, c)
+	zone += "."
+	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone) })
 }
 
 func TestIntegration_DeleteRecords(t *testing.T) {
 	p := setupProviderFromEnv(t)
 	c := newLinodeClientFromEnv(t)
-
-	// Create a fresh domain and some records for this test case.
-	zone, domainID := makeTestDomain(t, c)
-	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
-
 	ctx := context.Background()
 
-	// Build a set of deletions to exercise exact and wildcard semantics.
-	toDelete := []libdns.Record{
-		// Exact match delete: A a1 192.0.2.1 with TTL 300
-		libdns.RR{Name: "a1", Type: "A", TTL: 300 * time.Second, Data: netip.MustParseAddr("192.0.2.1").String()},
+	testForZone := func(t *testing.T, zone string) {
+		// Build a set of deletions to exercise exact and wildcard semantics.
+		toDelete := []libdns.Record{
+			// Exact match delete: A a1 192.0.2.1 with TTL 300
+			libdns.RR{Name: "a1", Type: "A", TTL: 300 * time.Second, Data: netip.MustParseAddr("192.0.2.1").String()},
 
-		// Wildcard type/TTL/value: delete all records with name "dup"
-		// (in our test data, these are two A records with different IPs)
-		libdns.RR{Name: "dup"},
+			// Wildcard type/TTL/value: delete all records with name "dup"
+			// (in our test data, these are two A records with different IPs)
+			libdns.RR{Name: "dup"},
 
-		// TTL wildcard for specific TXT record: delete txt1 (any TTL)
-		libdns.RR{Name: "txt1", Type: "TXT", TTL: 0, Data: ""},
+			// TTL wildcard for specific TXT record: delete txt1 (any TTL)
+			libdns.RR{Name: "txt1", Type: "TXT", TTL: 0, Data: ""},
 
-		// Delete the MX at zone root (name "@"), with wildcard TTL
-		libdns.RR{Name: "@", Type: "MX"},
-	}
+			// Delete the MX at zone root (name "@"), with wildcard TTL
+			libdns.RR{Name: "@", Type: "MX"},
+		}
 
-	deleted, err := p.DeleteRecords(ctx, zone, toDelete)
-	if err != nil {
-		t.Fatalf("DeleteRecords returned error for zone %q: %v", zone, err)
-	}
+		deleted, err := p.DeleteRecords(ctx, zone, toDelete)
+		if err != nil {
+			t.Fatalf("DeleteRecords returned error for zone %q: %v", zone, err)
+		}
 
-	// Collect deleted records by name+type for validation convenience.
-	deletedMap := make(map[string][]libdns.RR)
-	for _, rec := range deleted {
-		rr := rec.RR()
-		key := rr.Name + "|" + rr.Type
-		deletedMap[key] = append(deletedMap[key], rr)
-	}
+		// Collect deleted records by name+type for validation convenience.
+		deletedMap := make(map[string][]libdns.RR)
+		for _, rec := range deleted {
+			rr := rec.RR()
+			key := rr.Name + "|" + rr.Type
+			deletedMap[key] = append(deletedMap[key], rr)
+		}
 
-	// We expect at least 5 records deleted:
-	// - a1 A (exact) -> 1
-	// - dup A (name wildcard) -> 2
-	// - txt1 TXT -> 1
-	// - @ MX -> 1
-	if len(deleted) < 5 {
-		t.Fatalf("expected at least 5 records to be deleted, got %d (deleted=%v)", len(deleted), deleted)
-	}
+		// We expect at least 5 records deleted:
+		// - a1 A (exact) -> 1
+		// - dup A (name wildcard) -> 2
+		// - txt1 TXT -> 1
+		// - @ MX -> 1
+		if len(deleted) < 5 {
+			t.Fatalf("expected at least 5 records to be deleted, got %d (deleted=%v)", len(deleted), deleted)
+		}
 
-	// Verify the expected specific deletions exist in the returned slice.
-	// a1 A 192.0.2.1
-	{
-		key := "a1|A"
-		found := false
-		for _, rr := range deletedMap[key] {
-			if rr.TTL == 300*time.Second && rr.Data == netip.MustParseAddr("192.0.2.1").String() {
-				found = true
-				break
+		// Verify the expected specific deletions exist in the returned slice.
+		// a1 A 192.0.2.1
+		{
+			key := "a1|A"
+			found := false
+			for _, rr := range deletedMap[key] {
+				if rr.TTL == 300*time.Second && rr.Data == netip.MustParseAddr("192.0.2.1").String() {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected exact deletion of A a1 192.0.2.1 TTL 300s")
 			}
 		}
-		if !found {
-			t.Errorf("expected exact deletion of A a1 192.0.2.1 TTL 300s")
+		// dup A should have 2 deletions regardless of IPs/TTLs when using wildcard input.
+		if cnt := len(deletedMap["dup|A"]); cnt != 2 {
+			t.Errorf("expected to delete 2 A records for name 'dup'; got %d", cnt)
 		}
-	}
-	// dup A should have 2 deletions regardless of IPs/TTLs when using wildcard input.
-	if cnt := len(deletedMap["dup|A"]); cnt != 2 {
-		t.Errorf("expected to delete 2 A records for name 'dup'; got %d", cnt)
-	}
-	// txt1 TXT should be deleted
-	if len(deletedMap["txt1|TXT"]) != 1 {
-		t.Errorf("expected to delete TXT record 'txt1'")
-	}
-	// root MX should be deleted (root is represented by '@')
-	if len(deletedMap["@|MX"]) != 1 {
-		t.Errorf("expected to delete MX record at root '@'")
-	}
+		// txt1 TXT should be deleted
+		if len(deletedMap["txt1|TXT"]) != 1 {
+			t.Errorf("expected to delete TXT record 'txt1'")
+		}
+		// root MX should be deleted (root is represented by '@')
+		if len(deletedMap["@|MX"]) != 1 {
+			t.Errorf("expected to delete MX record at root '@'")
+		}
 
-	// Now confirm via GetRecords that the deleted records are indeed gone,
-	// and that unrelated records still exist.
-	after, err := p.GetRecords(ctx, zone)
-	if err != nil {
-		t.Fatalf("GetRecords after deletions returned error for zone %q: %v", zone, err)
-	}
+		// Now confirm via GetRecords that the deleted records are indeed gone,
+		// and that unrelated records still exist.
+		after, err := p.GetRecords(ctx, zone)
+		if err != nil {
+			t.Fatalf("GetRecords after deletions returned error for zone %q: %v", zone, err)
+		}
 
-	// Helper to assert absence of a record in the current zone.
-	assertAbsentWithWildcard := func(expected libdns.Record) {
-		exp := expected.RR()
-		for _, actual := range after {
-			act := actual.RR()
-			if exp.Name == act.Name && exp.Type == act.Type && (exp.TTL == 0 || exp.TTL == act.TTL) && (exp.Data == "" || exp.Data == act.Data) {
-				t.Errorf("record should have been deleted but still present: %+v", exp)
-				return
+		// Helper to assert absence of a record in the current zone.
+		assertAbsentWithWildcard := func(expected libdns.Record) {
+			exp := expected.RR()
+			for _, actual := range after {
+				act := actual.RR()
+				if exp.Name == act.Name && exp.Type == act.Type && (exp.TTL == 0 || exp.TTL == act.TTL) && (exp.Data == "" || exp.Data == act.Data) {
+					t.Errorf("record should have been deleted but still present: %+v", exp)
+					return
+				}
 			}
 		}
+
+		// Assert absence of those we intended to delete.
+		assertAbsentWithWildcard(libdns.RR{Name: "a1", Type: "A", TTL: 300 * time.Second, Data: netip.MustParseAddr("192.0.2.1").String()})
+		// For wildcard name-only deletions, ensure that no records with that name remain for type A.
+		assertAbsentWithWildcard(libdns.RR{Name: "dup"})
+		assertAbsentWithWildcard(libdns.RR{Name: "txt1", Type: "TXT"})
+		assertAbsentWithWildcard(libdns.RR{Name: "@", Type: "MX"})
+
+		// Sanity checks: unrelated records should still exist.
+		// a2 A should remain
+		assertPresent(t, libdns.Address{Name: "a2", TTL: 5 * time.Minute, IP: netip.MustParseAddr("192.0.2.2")}, after)
+		// Root TXT should remain
+		assertPresent(t, libdns.TXT{Name: "@", TTL: 5 * time.Minute, Text: "root-text"}, after)
+
+		t.Logf("DeleteRecords succeeded for zone %q; expected records were deleted and unrelated records remain", zone)
 	}
 
-	// Assert absence of those we intended to delete.
-	assertAbsentWithWildcard(libdns.RR{Name: "a1", Type: "A", TTL: 300 * time.Second, Data: netip.MustParseAddr("192.0.2.1").String()})
-	// For wildcard name-only deletions, ensure that no records with that name remain for type A.
-	assertAbsentWithWildcard(libdns.RR{Name: "dup"})
-	assertAbsentWithWildcard(libdns.RR{Name: "txt1", Type: "TXT"})
-	assertAbsentWithWildcard(libdns.RR{Name: "@", Type: "MX"})
+	// Domain without dot suffix
+	zone, domainID := makeTestDomain(t, c)
+	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone) })
 
-	// Sanity checks: unrelated records should still exist.
-	// a2 A should remain
-	assertPresent(t, libdns.Address{Name: "a2", TTL: 5 * time.Minute, IP: netip.MustParseAddr("192.0.2.2")}, after)
-	// Root TXT should remain
-	assertPresent(t, libdns.TXT{Name: "@", TTL: 5 * time.Minute, Text: "root-text"}, after)
-
-	t.Logf("DeleteRecords succeeded for zone %q; expected records were deleted and unrelated records remain", zone)
+	// Domain with dot suffix
+	zone, domainID = makeTestDomain(t, c)
+	zone += "."
+	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone) })
 }
 
 func TestIntegration_AppendRecords(t *testing.T) {
 	p := setupProviderFromEnv(t)
 	c := newLinodeClientFromEnv(t)
+	ctx := context.Background()
 
-	// Create a fresh domain for this test case (with baseline records).
 	zone, domainID := makeTestDomain(t, c)
 	createDomainRecordsOrDie(t, c, zone, domainID, makeTestDomainRecords(zone))
-	ctx := context.Background()
 
 	// Prepare a variety of records to append.
 	newA := libdns.Address{Name: "newa", TTL: 2 * time.Minute, IP: netip.MustParseAddr("192.0.2.200")}
@@ -426,45 +446,54 @@ func TestIntegration_SetRecords_Example1(t *testing.T) {
 	c := newLinodeClientFromEnv(t)
 	ctx := context.Background()
 
+	testForZone := func(t *testing.T, zone string, domainID int) {
+		// Ensure original zone has two root A records and a root TXT
+		recordsPriorToSet := []libdns.Record{
+			libdns.Address{Name: "@", IP: netip.MustParseAddr("192.0.2.1"), TTL: 5 * time.Minute},
+			libdns.Address{Name: "@", IP: netip.MustParseAddr("192.0.2.2"), TTL: 5 * time.Minute},
+			libdns.TXT{Name: "@", TTL: 5 * time.Minute, Text: "root-text"},
+		}
+		createDomainRecordsOrDie(t, c, zone, domainID, recordsPriorToSet)
+
+		// Input: Set only one A at root to 192.0.2.3 with TTL 3600.
+		input := []libdns.Record{
+			libdns.Address{Name: "@", TTL: 3600 * time.Second, IP: netip.MustParseAddr("192.0.2.3")},
+		}
+		setRecords, err := p.SetRecords(ctx, zone, input)
+		if err != nil {
+			t.Fatalf("SetRecords returned error: %v", err)
+		}
+
+		// assert one set record
+		if len(setRecords) != 1 {
+			t.Fatalf("expected one set record, got %d", len(setRecords))
+		}
+
+		// Resultant zone: only A @ 192.0.2.3 remains for (Name=@,Type=A); other records unchanged.
+		after, err := p.GetRecords(ctx, zone)
+		if err != nil {
+			t.Fatalf("GetRecords after SetRecords error: %v", err)
+		}
+
+		if len(after) != 2 {
+			t.Fatalf("expected 2 records after SetRecords, got %d", len(after))
+		}
+
+		// Assert that the expected records are present.
+		for _, inputRec := range input {
+			assertPresent(t, inputRec, after)
+		}
+		assertPresent(t, recordsPriorToSet[2], after) // The TXT
+	}
+
+	// Domain without dot suffix
 	zone, domainID := makeTestDomain(t, c)
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone, domainID) })
 
-	// Ensure original zone has two root A records and a root TXT
-	recordsPriorToSet := []libdns.Record{
-		libdns.Address{Name: "@", IP: netip.MustParseAddr("192.0.2.1"), TTL: 5 * time.Minute},
-		libdns.Address{Name: "@", IP: netip.MustParseAddr("192.0.2.2"), TTL: 5 * time.Minute},
-		libdns.TXT{Name: "@", TTL: 5 * time.Minute, Text: "root-text"},
-	}
-	createDomainRecordsOrDie(t, c, zone, domainID, recordsPriorToSet)
-
-	// Input: Set only one A at root to 192.0.2.3 with TTL 3600.
-	input := []libdns.Record{
-		libdns.Address{Name: "@", TTL: 3600 * time.Second, IP: netip.MustParseAddr("192.0.2.3")},
-	}
-	setRecords, err := p.SetRecords(ctx, zone, input)
-	if err != nil {
-		t.Fatalf("SetRecords returned error: %v", err)
-	}
-
-	// assert one set record
-	if len(setRecords) != 1 {
-		t.Fatalf("expected one set record, got %d", len(setRecords))
-	}
-
-	// Resultant zone: only A @ 192.0.2.3 remains for (Name=@,Type=A); other records unchanged.
-	after, err := p.GetRecords(ctx, zone)
-	if err != nil {
-		t.Fatalf("GetRecords after SetRecords error: %v", err)
-	}
-
-	if len(after) != 2 {
-		t.Fatalf("expected 2 records after SetRecords, got %d", len(after))
-	}
-
-	// Assert that the expected records are present.
-	for _, inputRec := range input {
-		assertPresent(t, inputRec, after)
-	}
-	assertPresent(t, recordsPriorToSet[2], after) // The TXT
+	// Domain with dot suffix
+	zone, domainID = makeTestDomain(t, c)
+	zone += "."
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone, domainID) })
 }
 
 func TestIntegration_SetRecords_Example2(t *testing.T) {
@@ -472,65 +501,105 @@ func TestIntegration_SetRecords_Example2(t *testing.T) {
 	c := newLinodeClientFromEnv(t)
 	ctx := context.Background()
 
+	testForZone := func(t *testing.T, zone string, domainID int) {
+		//
+		//	;; Original zone
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::1
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::2
+		//	beta.example.com.  3600 IN AAAA 2001:db8::3
+		//	beta.example.com.  3600 IN AAAA 2001:db8::4
+		//
+		recordsPriorToSet := []libdns.Record{
+			libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::1")},
+			libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::2")},
+			libdns.Address{Name: "beta", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::3")},
+			libdns.Address{Name: "beta", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::4")},
+		}
+		createDomainRecordsOrDie(t, c, zone, domainID, recordsPriorToSet)
+
+		//
+		//	;; Input
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::1
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::2
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::5
+		//
+		input := []libdns.Record{
+			libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::1")},
+			libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::2")},
+			libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::5")},
+		}
+		setRecords, err := p.SetRecords(ctx, zone, input)
+		if err != nil {
+			t.Fatalf("SetRecords returned error: %v", err)
+		}
+		// should have set 3 records for alpha AAAA
+		if len(setRecords) != 3 {
+			t.Fatalf("expected 3 set records, got %d", len(setRecords))
+		}
+
+		//
+		//	;; Resultant zone
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::1
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::2
+		//	alpha.example.com. 3600 IN AAAA 2001:db8::5
+		//	beta.example.com.  3600 IN AAAA 2001:db8::3
+		//	beta.example.com.  3600 IN AAAA 2001:db8::4
+		//
+		after, err := p.GetRecords(ctx, zone)
+		if err != nil {
+			t.Fatalf("GetRecords after SetRecords error: %v", err)
+		}
+
+		// We expect exactly 5 records in the zone now
+		if len(after) != 5 {
+			t.Fatalf("expected 5 records after SetRecords, got %d", len(after))
+		}
+
+		// Assert that expected records are present
+		for _, inputRec := range input {
+			assertPresent(t, inputRec, after)
+		}
+		assertPresent(t, recordsPriorToSet[2], after) // beta ::3
+		assertPresent(t, recordsPriorToSet[3], after) // beta ::4
+	}
+
+	// Domain without dot suffix
 	zone, domainID := makeTestDomain(t, c)
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone, domainID) })
 
-	//
-	//	;; Original zone
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::1
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::2
-	//	beta.example.com.  3600 IN AAAA 2001:db8::3
-	//	beta.example.com.  3600 IN AAAA 2001:db8::4
-	//
-	recordsPriorToSet := []libdns.Record{
-		libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::1")},
-		libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::2")},
-		libdns.Address{Name: "beta", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::3")},
-		libdns.Address{Name: "beta", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::4")},
-	}
-	createDomainRecordsOrDie(t, c, zone, domainID, recordsPriorToSet)
+	// Domain with dot suffix
+	zone, domainID = makeTestDomain(t, c)
+	zone += "."
+	t.Run(zone, func(t *testing.T) { testForZone(t, zone, domainID) })
+}
 
-	//
-	//	;; Input
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::1
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::2
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::5
-	//
-	input := []libdns.Record{
-		libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::1")},
-		libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::2")},
-		libdns.Address{Name: "alpha", TTL: 3600 * time.Second, IP: netip.MustParseAddr("2001:db8::5")},
-	}
-	setRecords, err := p.SetRecords(ctx, zone, input)
+// Test case replicating a real-world scenario:
+// This replicates what Caddy does when it is working on a DNS-01 challenge.
+// It creates a TXT record with TTL 0, name _acme-challenge.<subdomain>, and zone "<domain>.".
+func TestIntegration_AcmeChallenge_AppendTXT(t *testing.T) {
+	c := newLinodeClientFromEnv(t)
+	p := setupProviderFromEnv(t)
+	ctx := context.Background()
+
+	// Domain with dot suffix
+	zone, _ := makeTestDomain(t, c)
+	zone += "."
+	acmeTXT := libdns.TXT{Name: "_acme-challenge.foobar", TTL: 0, Text: "xyz123"}
+
+	added, err := p.AppendRecords(ctx, zone, []libdns.Record{acmeTXT})
 	if err != nil {
-		t.Fatalf("SetRecords returned error: %v", err)
+		t.Fatalf("AppendRecords returned error for zone %q: %v", zone, err)
 	}
-	// should have set 3 records for alpha AAAA
-	if len(setRecords) != 3 {
-		t.Fatalf("expected 3 set records, got %d", len(setRecords))
+	if len(added) != 1 {
+		t.Fatalf("expected exactly 1 record to be added; got %d; added=%v", len(added), added)
 	}
+	// Assert the record we intended to add is in the returned slice
+	assertPresent(t, acmeTXT, added)
 
-	//
-	//	;; Resultant zone
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::1
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::2
-	//	alpha.example.com. 3600 IN AAAA 2001:db8::5
-	//	beta.example.com.  3600 IN AAAA 2001:db8::3
-	//	beta.example.com.  3600 IN AAAA 2001:db8::4
-	//
-	after, err := p.GetRecords(ctx, zone)
+	// Optionally verify via GetRecords that it now exists in the zone
+	all, err := p.GetRecords(ctx, zone)
 	if err != nil {
-		t.Fatalf("GetRecords after SetRecords error: %v", err)
+		t.Fatalf("GetRecords after append returned error for zone %q: %v", zone, err)
 	}
-
-	// We expect exactly 5 records in the zone now
-	if len(after) != 5 {
-		t.Fatalf("expected 5 records after SetRecords, got %d", len(after))
-	}
-
-	// Assert that expected records are present
-	for _, inputRec := range input {
-		assertPresent(t, inputRec, after)
-	}
-	assertPresent(t, recordsPriorToSet[2], after) // beta ::3
-	assertPresent(t, recordsPriorToSet[3], after) // beta ::4
+	assertPresent(t, acmeTXT, all)
 }

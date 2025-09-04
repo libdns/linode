@@ -1,4 +1,4 @@
-module github.com/HugoKlepsch/libdns-linode
+module github.com/libdns/linode
 
 go 1.23.0
 

@@ -8,8 +8,9 @@ This package implements the [libdns interfaces](https://github.com/libdns/libdns
 Requires a Linode API token.
 
 This package was created for use in [HugoKlepsch/caddy-dns_linode](https://github.com/HugoKlepsch/caddy-dns_linode)
-which is a Caddy plugin for managing DNS records on Linode. Caddy uses this package
-to complete DNS-01 challenges when using Linode.
+or [caddy-dns/linode](https://github.com/caddy-dns/linode).
+Both are Caddy plugins for managing DNS records on Linode. 
+Caddy uses this package to complete DNS-01 challenges when using Linode.
 It may have behaviour tailored to that use case.
 
 # Getting a token

@@ -6,7 +6,7 @@ toolchain go1.24.6
 
 require (
 	github.com/libdns/libdns v1.1.1
-	github.com/linode/linodego v1.56.0
+	github.com/linode/linodego v1.57.0
 )
 
 require (
